@@ -1,0 +1,70 @@
+site_name: cache-cache
+site_description: Async caching for Python with dedupe, per-request sessions, batching and hierarchical tags.
+site_url: https://mde-pach.github.io/cache-cache/
+repo_url: https://github.com/mde-pach/cache-cache
+repo_name: mde-pach/cache-cache
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - search.suggest
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - tables
+  - attr_list
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.details
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            show_source: false
+            show_root_heading: true
+            members_order: source
+            separate_signature: true
+            show_signature_annotations: true
+
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - Guide:
+      - Lifetimes: guide/lifetimes.md
+      - Keys: guide/keys.md
+      - Tags and invalidation: guide/tags.md
+      - Batching: guide/batching.md
+      - Stale values: guide/stale.md
+      - Per-call controls: guide/controls.md
+      - Hooks: guide/hooks.md
+      - Testing: guide/testing.md
+      - FastAPI: guide/fastapi.md
+      - Backends: guide/backends.md
+  - How it works: design.md
+  - Comparison: comparison.md
+  - API reference: api.md
