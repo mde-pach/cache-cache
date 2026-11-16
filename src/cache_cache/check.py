@@ -19,8 +19,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from types import ModuleType
 
+from ._base import registered_functions, registered_invalidations
 from .errors import ConfigurationError
-from .functions import registered_functions, registered_invalidations
 from .tags import TagTemplate
 
 __all__ = ["CheckReport", "main", "run_check"]
@@ -77,7 +77,7 @@ def _literal_invalidations(module: ModuleType) -> list[TagTemplate]:
             continue
         func = node.func
         name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
-        if name != "invalidate":
+        if name not in ("invalidate", "invalidate_sync"):
             continue
         for arg in node.args:
             if isinstance(arg, ast.Constant) and isinstance(arg.value, str):

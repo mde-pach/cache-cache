@@ -1,6 +1,6 @@
 # cache-cache
 
-Caching for `async` Python functions. Three decorators cover four behaviours: deduping concurrent calls, caching per request, caching in a shared backend, and batching. The backend can be in memory or Redis.
+Caching for Python functions, `async def` or plain `def`. Three decorators cover four behaviours: deduping concurrent calls, caching per request, caching in a shared backend, and batching. The backend can be in memory or Redis.
 
 ```python
 from cache_cache import Cache, cached, invalidates
@@ -34,14 +34,15 @@ async with cache:                 # once, at startup
 - **No invalidation race.** An entry computed from data that was invalidated while it was running is never served. See [How it works](design.md).
 - **Invalidation after commit.** Invalidations in `cache.transaction()` apply when the block exits, and the block reads its own writes.
 - **Stale values.** Stale-while-revalidate and stale-if-error, per function.
-- **Automatic invalidation on code change.** A function's code and its return type are part of its keys.
+- **Deploy-safe.** `Cache(version=GIT_SHA)` keeps each deploy's entries apart while invalidations still reach all of them, and `clear()` empties a namespace in one write.
+- **Sync too.** The same decorators work on plain functions with a `SyncCache` (Django, Flask, workers). Dedupe works across threads.
 - **Early errors.** Tag placeholders, key, condition and bulk signatures are checked at import. Key encodings and return types are checked when the cache opens, and the `cache-cache check` command catches mistyped tags in CI.
 - **Hooks.** Observers for metrics and logs, and middleware that can change behaviour.
 
 ## Limits
 
-- `async` functions only.
+- Batching needs `async` functions.
 - Dedupe and batching happen within one process.
-- Version 0.1: the API may still change.
+- Version 0.2: the API may still change.
 
 Start with [Getting started](getting-started.md).

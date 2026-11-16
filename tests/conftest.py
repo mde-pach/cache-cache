@@ -8,8 +8,8 @@ import pytest
 
 import cache_cache
 from cache_cache import Cache, MemoryBackend, _clock
+from cache_cache import _base as functions_module
 from cache_cache import cache as cache_module
-from cache_cache import functions as functions_module
 
 
 class FakeClock:

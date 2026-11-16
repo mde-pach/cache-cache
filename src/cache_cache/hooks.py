@@ -21,6 +21,10 @@ __all__ = [
     "Next",
     "Observer",
     "StatsObserver",
+    "SyncCachedCall",
+    "SyncDontJoinOldCalls",
+    "SyncMiddleware",
+    "SyncNext",
 ]
 
 
@@ -44,6 +48,7 @@ EventKind = Literal[
     "store",  # a result was written to the backend
     "bypass",  # caching skipped: condition, transaction or disabled()
     "invalidate",  # tags were invalidated; see ``tags``
+    "clear",  # the namespace was cleared
     "error",  # the function or the backend raised; see ``error``
 ]
 
@@ -119,12 +124,50 @@ class CachedCall:
         return f"CachedCall({self.function.name}, lookup={self.lookup})"
 
 
+class SyncCachedCall:
+    """One call of a sync function going through the sync middleware chain."""
+
+    __slots__ = ("_run", "args", "function", "instance", "key", "kwargs", "lookup")
+
+    def __init__(
+        self,
+        *,
+        function: FunctionInfo,
+        instance: Any,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        key: str,
+        lookup: Lookup,
+        run: Callable[[], Any],
+    ) -> None:
+        self.function = function
+        self.instance = instance
+        self.args = args
+        self.kwargs = kwargs
+        self.key = key
+        self.lookup = lookup
+        self._run = run
+
+    def run(self) -> Any:
+        """Start a fresh call, ignoring any cached value and any call in flight."""
+        return self._run()
+
+    def __repr__(self) -> str:
+        return f"SyncCachedCall({self.function.name}, lookup={self.lookup})"
+
+
 Next = Callable[[CachedCall], Awaitable[Any]]
+SyncNext = Callable[[SyncCachedCall], Any]
 
 
 @runtime_checkable
 class Middleware(Protocol):
     async def __call__(self, call: CachedCall, call_next: Next) -> Any: ...
+
+
+@runtime_checkable
+class SyncMiddleware(Protocol):
+    def __call__(self, call: SyncCachedCall, call_next: SyncNext) -> Any: ...
 
 
 class DontJoinOldCalls:
@@ -138,6 +181,19 @@ class DontJoinOldCalls:
         if lookup.state == "in_flight" and lookup.age is not None and lookup.age > self.max_age:
             return await call.run()
         return await call_next(call)
+
+
+class SyncDontJoinOldCalls:
+    """:class:`DontJoinOldCalls` for :class:`~cache_cache.SyncCache`."""
+
+    def __init__(self, max_age: float = 2.0) -> None:
+        self.max_age = max_age
+
+    def __call__(self, call: SyncCachedCall, call_next: SyncNext) -> Any:
+        lookup = call.lookup
+        if lookup.state == "in_flight" and lookup.age is not None and lookup.age > self.max_age:
+            return call.run()
+        return call_next(call)
 
 
 @dataclass

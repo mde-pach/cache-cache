@@ -82,5 +82,7 @@ cache = Cache(middleware=[DontJoinOldCalls(max_age=2)])
 
 `DontJoinOldCalls` is built in.
 
+`SyncCache` takes sync middleware: `def __call__(self, call: SyncCachedCall, call_next: SyncNext)`, where `call.run()` and `call_next(call)` are plain calls. `SyncDontJoinOldCalls` is the sync `DontJoinOldCalls`.
+
 !!! note
     Middleware runs for calls that reach the cache. Calls bypassed by a condition, a pending transaction tag or `disabled()` don't go through it.

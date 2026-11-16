@@ -2,10 +2,12 @@
 
 You don't write keys. A key is built from:
 
-1. the cache `namespace`,
+1. the cache's `namespace` and `version`,
 2. the function's module and qualified name,
-3. a fingerprint of its code, its return type and its `version=` (see [How it works](../design.md#code-fingerprints)),
+3. the function's `version=`,
 4. a digest of its arguments.
+
+See [Deploys and clearing](deploys.md) for the versions.
 
 `self` is never part of a key. Defaults are applied first, so `get(1)` and `get(1, include_deleted=False)` share an entry.
 

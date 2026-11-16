@@ -65,6 +65,8 @@ nav:
       - Testing: guide/testing.md
       - FastAPI: guide/fastapi.md
       - Backends: guide/backends.md
+      - Deploys and clearing: guide/deploys.md
+      - Sync code: guide/sync.md
   - How it works: design.md
   - Comparison: comparison.md
   - API reference: api.md

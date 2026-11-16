@@ -1,6 +1,10 @@
-"""cache-cache: async caching with dedupe, sessions, invisible batching and hierarchical tags."""
+"""cache-cache: caching with dedupe, sessions, invisible batching and hierarchical tags.
 
-from .backends import Backend, Entry, MemoryBackend, StoreItem
+Works on ``async def`` functions (:class:`Cache`) and plain ``def`` functions (:class:`SyncCache`).
+"""
+
+from ._base import DEFAULT
+from .backends import Backend, Entry, MemoryBackend, StoreItem, SyncBackend, SyncMemoryBackend
 from .cache import (
     Cache,
     Session,
@@ -12,6 +16,7 @@ from .cache import (
     invalidate,
 )
 from .codecs import Codec, PickleCodec, PydanticCodec
+from .decorators import cached, dedupe, invalidates
 from .errors import (
     CacheCacheError,
     CacheClosedError,
@@ -19,16 +24,7 @@ from .errors import (
     KeyEncodingError,
     NoActiveSession,
 )
-from .functions import (
-    DEFAULT,
-    BatchedFunction,
-    BoundBatchedFunction,
-    BoundCachedFunction,
-    CachedFunction,
-    cached,
-    dedupe,
-    invalidates,
-)
+from .functions import BatchedFunction, BoundBatchedFunction, BoundCachedFunction, CachedFunction
 from .hooks import (
     CachedCall,
     CacheEvent,
@@ -41,10 +37,22 @@ from .hooks import (
     Next,
     Observer,
     StatsObserver,
+    SyncCachedCall,
+    SyncDontJoinOldCalls,
+    SyncMiddleware,
+    SyncNext,
+)
+from .sync import (
+    BoundSyncCachedFunction,
+    SyncCache,
+    SyncCachedFunction,
+    SyncTransaction,
+    current_sync_cache,
+    invalidate_sync,
 )
 from .testing import Recorder, record
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "DEFAULT",
@@ -52,6 +60,7 @@ __all__ = [
     "BatchedFunction",
     "BoundBatchedFunction",
     "BoundCachedFunction",
+    "BoundSyncCachedFunction",
     "Cache",
     "CacheCacheError",
     "CacheClosedError",
@@ -78,23 +87,34 @@ __all__ = [
     "Session",
     "StatsObserver",
     "StoreItem",
+    "SyncBackend",
+    "SyncCache",
+    "SyncCachedCall",
+    "SyncCachedFunction",
+    "SyncDontJoinOldCalls",
+    "SyncMemoryBackend",
+    "SyncMiddleware",
+    "SyncNext",
+    "SyncTransaction",
     "Transaction",
     "__version__",
     "cached",
     "configure",
     "current_cache",
     "current_session",
+    "current_sync_cache",
     "dedupe",
     "disabled",
     "invalidate",
+    "invalidate_sync",
     "invalidates",
     "record",
 ]
 
 
 def __getattr__(name: str) -> object:
-    if name == "RedisBackend":
-        from .backends.redis import RedisBackend
+    if name in ("RedisBackend", "SyncRedisBackend"):
+        from .backends import redis
 
-        return RedisBackend
+        return getattr(redis, name)
     raise AttributeError(name)

@@ -1,17 +1,18 @@
-"""The cache, sessions, transactions and the context they live in."""
+"""The async cache, sessions, transactions and the context they live in."""
 
 from __future__ import annotations
 
 import asyncio
 import contextvars
 import logging
+import threading
 import weakref
 from collections import OrderedDict
 from collections.abc import Callable, Coroutine, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any, Literal, Self
 
 from .backends.base import Backend, Entry
 from .backends.memory import MemoryBackend
@@ -25,8 +26,10 @@ if TYPE_CHECKING:  # pragma: no cover
 
 __all__ = [
     "Cache",
+    "CacheBase",
     "Session",
     "Transaction",
+    "TransactionBase",
     "configure",
     "current_cache",
     "current_session",
@@ -39,7 +42,7 @@ logger = logging.getLogger("cache_cache")
 _session_var: contextvars.ContextVar[Session | None] = contextvars.ContextVar(
     "cache_cache_session", default=None
 )
-_transaction_var: contextvars.ContextVar[Transaction | None] = contextvars.ContextVar(
+_transaction_var: contextvars.ContextVar[TransactionBase | None] = contextvars.ContextVar(
     "cache_cache_transaction", default=None
 )
 _disabled_var: contextvars.ContextVar[bool] = contextvars.ContextVar(
@@ -49,7 +52,8 @@ _recorders_var: contextvars.ContextVar[tuple[Recorder, ...]] = contextvars.Conte
     "cache_cache_recorders", default=()
 )
 
-_open_caches: list[Cache] = []
+_open_caches: list[CacheBase] = []
+_open_lock = threading.Lock()
 
 
 @dataclass
@@ -75,26 +79,36 @@ def current_session() -> Session | None:
     return _session_var.get()
 
 
-def current_cache() -> Cache | None:
-    """The cache of the current session, else the most recently opened cache."""
+def _current(kind: Literal["async", "sync"]) -> CacheBase | None:
     session = _session_var.get()
-    if session is not None:
+    if session is not None and session.cache.kind == kind:
         return session.cache
-    return _open_caches[-1] if _open_caches else None
+    with _open_lock:
+        for cache in reversed(_open_caches):
+            if cache.kind == kind:
+                return cache
+    return None
 
 
-def emit(cache: Cache | None, event: CacheEvent) -> None:
+def current_cache() -> Cache | None:
+    """The async cache of the current session, else the most recently opened async cache."""
+    cache = _current("async")
+    assert cache is None or isinstance(cache, Cache)
+    return cache
+
+
+def emit(cache: CacheBase | None, event: CacheEvent) -> None:
     observers: Iterable[Observer] = cache.observers if cache is not None else ()
     for observer in (*observers, *_recorders_var.get()):
         try:
             observer.on_event(event)
-        except Exception:  # pragma: no cover - observers must not break calls
+        except Exception:
             logger.exception("cache-cache observer %r failed", observer)
 
 
 @contextmanager
 def disabled() -> Iterator[None]:
-    """No caching, deduping or batching in this block: every call runs the function."""
+    """No caching or deduping in this block: every call runs (batching still applies)."""
     token = _disabled_var.set(True)
     try:
         yield
@@ -103,22 +117,117 @@ def disabled() -> Iterator[None]:
 
 
 async def invalidate(*tags: str) -> None:
-    """Invalidate tags (and everything below them) on the current cache.
+    """Invalidate tags (and everything below them) on the current async cache.
 
     Inside :meth:`Cache.transaction`, this is deferred until the block exits.
-    Without an open cache, it does nothing.
+    Without an open cache, it does nothing. Sync code uses
+    :func:`~cache_cache.invalidate_sync`.
     """
     cache = current_cache()
     if cache is not None:
         await cache.invalidate(*tags)
 
 
-class Cache:
-    """A long-lived cache, opened once with the application.
+class CacheBase:
+    """Settings and in-process state shared by :class:`Cache` and ``SyncCache``."""
+
+    kind: Literal["async", "sync"]
+    backend: Any
+
+    def __init__(
+        self,
+        *,
+        namespace: str,
+        version: str | None,
+        ttl: float | None,
+        observers: Sequence[Observer],
+        key_ignore: Sequence[type],
+        key_formats: KeyFormats | None,
+        shutdown_timeout: float,
+        clear_on_open: bool,
+    ) -> None:
+        for label, value in (("namespace", namespace), ("version", version or "")):
+            if any(char in value for char in ":|#"):
+                raise ValueError(f"{label} can't contain ':', '|' or '#'")
+        if not namespace:
+            raise ValueError("namespace can't be empty")
+        if ttl is not None and ttl <= 0:
+            raise ValueError("ttl must be positive, or None for no expiry")
+        self.namespace = namespace
+        self.version = version
+        self.ttl = ttl
+        self.observers: list[Observer] = list(observers)
+        self.key_ignore: tuple[type, ...] = tuple(key_ignore)
+        self.key_formats: dict[type, Callable[[Any], Any]] = dict(key_formats or {})
+        self.shutdown_timeout = shutdown_timeout
+        self.clear_on_open = clear_on_open
+        self._open = False
+        self._sessions: weakref.WeakSet[Session] = weakref.WeakSet()
+        self._sessions_lock = threading.Lock()
+
+    @property
+    def is_open(self) -> bool:
+        return self._open
+
+    @property
+    def generation_tag(self) -> str:
+        """A tag every entry depends on: bumping it clears the namespace."""
+        return f"{self.namespace}#generation"
+
+    def tag_name(self, tag: str) -> str:
+        """The tag as stored in the backend: namespaced (but not versioned)."""
+        return f"{self.namespace}|{tag}"
+
+    def session(self, *, max_entries: int | None = None) -> Session:
+        """A short-lived layer for one unit of work: a request, a job, a test."""
+        return Session(self, max_entries=max_entries)
+
+    def _register_open(self) -> None:
+        self._open = True
+        with _open_lock:
+            _open_caches.append(self)
+
+    def _register_closed(self) -> None:
+        self._open = False
+        with _open_lock:
+            if self in _open_caches:
+                _open_caches.remove(self)
+
+    def _open_sessions(self) -> list[Session]:
+        with self._sessions_lock:
+            return list(self._sessions)
+
+    def _after_invalidation(self, tags: Sequence[str]) -> None:
+        session = _session_var.get()
+        if session is not None and session.cache is self:
+            session.invalidated.update(tags)
+        for open_session in self._open_sessions():
+            open_session.drop_tags(tags)
+        emit(self, CacheEvent("invalidate", tags=tuple(tags)))
+
+    def _after_clear(self) -> None:
+        for open_session in self._open_sessions():
+            open_session.clear()
+        emit(self, CacheEvent("clear"))
+
+    def __repr__(self) -> str:
+        state = "open" if self._open else "closed"
+        version = f" version={self.version!r}" if self.version else ""
+        return (
+            f"<{type(self).__name__} {self.namespace!r}{version} "
+            f"{type(self.backend).__name__} {state}>"
+        )
+
+
+class Cache(CacheBase):
+    """A long-lived cache for ``async`` functions, opened once with the application.
 
     Args:
         backend: where entries live. Defaults to a :class:`MemoryBackend`.
-        namespace: prefix for every key and tag, so apps and versions can share a backend.
+        namespace: prefix for every key and tag, so apps can share a backend.
+        version: your deploy's version (a git SHA, a package version). Entries written
+            by one version are never read by another, while tags stay shared, so an
+            invalidation reaches every version during a rolling deploy.
         ttl: default lifetime, in seconds, for ``@cached`` functions that don't set ``ttl``.
             ``None`` means no expiry.
         observers: receive every :class:`~cache_cache.CacheEvent`.
@@ -126,61 +235,60 @@ class Cache:
         shutdown_timeout: on exit, seconds to wait for background refreshes before cancelling them.
         key_ignore: argument types never part of a key (database sessions, requests...).
         key_formats: how a type appears in a key, e.g. ``{Decimal: lambda d: str(d)}``.
+        clear_on_open: call :meth:`clear` when the cache opens. With a shared backend,
+            every process start clears it for every process; prefer ``version``.
     """
+
+    kind: Literal["async", "sync"] = "async"
 
     def __init__(
         self,
         *,
         backend: Backend | None = None,
         namespace: str = "cc",
+        version: str | None = None,
         ttl: float | None = 3600,
         observers: Sequence[Observer] = (),
         middleware: Sequence[Middleware] = (),
         shutdown_timeout: float = 5.0,
         key_ignore: Sequence[type] = (),
         key_formats: KeyFormats | None = None,
+        clear_on_open: bool = False,
     ) -> None:
-        if ":" in namespace or "|" in namespace:
-            raise ValueError("namespace can't contain ':' or '|'")
-        if ttl is not None and ttl <= 0:
-            raise ValueError("ttl must be positive, or None for no expiry")
+        super().__init__(
+            namespace=namespace,
+            version=version,
+            ttl=ttl,
+            observers=observers,
+            key_ignore=key_ignore,
+            key_formats=key_formats,
+            shutdown_timeout=shutdown_timeout,
+            clear_on_open=clear_on_open,
+        )
         self.backend: Backend = backend if backend is not None else MemoryBackend()
-        self.namespace = namespace
-        self.ttl = ttl
-        self.observers: list[Observer] = list(observers)
         self.middleware: list[Middleware] = list(middleware)
-        self.shutdown_timeout = shutdown_timeout
-        self.key_ignore: tuple[type, ...] = tuple(key_ignore)
-        self.key_formats: dict[type, Callable[[Any], Any]] = dict(key_formats or {})
-        self._open = False
-        self._sessions: weakref.WeakSet[Session] = weakref.WeakSet()
         self._background: set[asyncio.Task[Any]] = set()
         self._lookups = _LookupBatcher(self)
 
     # -- lifecycle -----------------------------------------------------------------
 
-    @property
-    def is_open(self) -> bool:
-        return self._open
-
     async def open(self) -> None:
-        """Open the backend and check every decorated function against this cache."""
+        """Open the backend and check every async decorated function against this cache."""
         if self._open:
             return
-        from .functions import validate_registered
+        from ._base import validate_registered
 
-        validate_registered(self)
+        validate_registered(self, "async")
         await self.backend.open()
-        self._open = True
-        _open_caches.append(self)
+        if self.clear_on_open:
+            await self.backend.bump_tags([self.generation_tag])
+        self._register_open()
 
     async def close(self) -> None:
         """Wait for background work (up to ``shutdown_timeout``), then close the backend."""
         if not self._open:
             return
-        self._open = False
-        if self in _open_caches:
-            _open_caches.remove(self)
+        self._register_closed()
         pending = [task for task in self._background if not task.done()]
         if pending:
             _done, still_running = await asyncio.wait(pending, timeout=self.shutdown_timeout)
@@ -201,10 +309,6 @@ class Cache:
         tb: TracebackType | None,
     ) -> None:
         await self.close()
-
-    def session(self, *, max_entries: int | None = None) -> Session:
-        """A short-lived layer for one unit of work: a request, a job, a test."""
-        return Session(self, max_entries=max_entries)
 
     def transaction(self) -> Transaction:
         """Collect invalidations in this block and apply them when it exits."""
@@ -227,18 +331,17 @@ class Cache:
             return
         unique = list(dict.fromkeys(tags))
         await self.backend.bump_tags([self.tag_name(tag) for tag in unique])
-        session = _session_var.get()
-        if session is not None:
-            session.invalidated.update(unique)
-        for open_session in list(self._sessions):
-            open_session.drop_tags(unique)
-        emit(self, CacheEvent("invalidate", tags=tuple(unique)))
+        self._after_invalidation(unique)
+
+    async def clear(self) -> None:
+        """Make every entry of this namespace unreadable, in one write.
+
+        Entries aren't deleted: they stop matching and expire with their ttl.
+        """
+        await self.backend.bump_tags([self.generation_tag])
+        self._after_clear()
 
     # -- internals -----------------------------------------------------------------
-
-    def tag_name(self, tag: str) -> str:
-        """The tag as stored in the backend: namespaced."""
-        return f"{self.namespace}|{tag}"
 
     def spawn_background(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
         """Run work that outlives the caller (stale-while-revalidate refreshes).
@@ -258,15 +361,11 @@ class Cache:
     async def lookup(
         self, key: str, tp: Any, tags: Sequence[str]
     ) -> tuple[Entry | None, dict[str, int] | None]:
-        """Fetch an entry and the current versions of ``tags`` (namespaced ancestors).
+        """Fetch an entry and the current versions of ``tags`` (namespaced).
 
         Lookups made in the same event-loop iteration share one backend round trip.
         """
         return await self._lookups.lookup(key, tp, tags)
-
-    def __repr__(self) -> str:
-        state = "open" if self._open else "closed"
-        return f"<Cache {self.namespace!r} {type(self.backend).__name__} {state}>"
 
 
 def _consume_exception(task: asyncio.Task[Any]) -> None:
@@ -279,48 +378,68 @@ class Session:
 
     It holds results until it closes, as a snapshot: invalidations made in this
     process drop its entries, but invalidations made by other processes don't.
+    Use it with ``async with`` (async cache) or ``with`` (sync cache).
     """
 
-    def __init__(self, cache: Cache, *, max_entries: int | None = None) -> None:
+    def __init__(self, cache: CacheBase, *, max_entries: int | None = None) -> None:
         self.cache = cache
         self.max_entries = max_entries
         self.invalidated: set[str] = set()
         self._entries: OrderedDict[str, tuple[Any, frozenset[str]]] = OrderedDict()
+        self._lock = threading.Lock()
         self._token: contextvars.Token[Session | None] | None = None
 
     def get(self, key: str) -> tuple[bool, Any]:
-        item = self._entries.get(key)
-        if item is None:
-            return False, None
-        self._entries.move_to_end(key)
-        return True, item[0]
+        with self._lock:
+            item = self._entries.get(key)
+            if item is None:
+                return False, None
+            self._entries.move_to_end(key)
+            return True, item[0]
 
     def put(self, key: str, value: Any, tags: frozenset[str]) -> None:
-        self._entries[key] = (value, tags)
-        self._entries.move_to_end(key)
-        if self.max_entries is not None:
-            while len(self._entries) > self.max_entries:
-                self._entries.popitem(last=False)
+        with self._lock:
+            self._entries[key] = (value, tags)
+            self._entries.move_to_end(key)
+            if self.max_entries is not None:
+                while len(self._entries) > self.max_entries:
+                    self._entries.popitem(last=False)
 
     def drop(self, key: str) -> None:
-        self._entries.pop(key, None)
+        with self._lock:
+            self._entries.pop(key, None)
 
     def drop_tags(self, tags: Iterable[str]) -> None:
         targets = set(tags)
-        for key in [k for k, (_v, ancestors) in self._entries.items() if ancestors & targets]:
-            del self._entries[key]
+        with self._lock:
+            for key in [k for k, (_v, found) in self._entries.items() if found & targets]:
+                del self._entries[key]
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
 
     def __len__(self) -> int:
         return len(self._entries)
 
-    async def __aenter__(self) -> Self:
+    def _enter(self) -> Self:
         if not self.cache.is_open:
-            raise CacheClosedError(
-                "open the cache first (`async with cache:` or `await cache.open()`)"
-            )
+            raise CacheClosedError("open the cache first (`async with cache:` or `with cache:`)")
         self._token = _session_var.set(self)
-        self.cache._sessions.add(self)
+        with self.cache._sessions_lock:
+            self.cache._sessions.add(self)
         return self
+
+    def _exit(self) -> None:
+        if self._token is not None:
+            _session_var.reset(self._token)
+            self._token = None
+        with self.cache._sessions_lock:
+            self.cache._sessions.discard(self)
+        self.clear()
+
+    async def __aenter__(self) -> Self:
+        return self._enter()
 
     async def __aexit__(
         self,
@@ -328,14 +447,21 @@ class Session:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        if self._token is not None:
-            _session_var.reset(self._token)
-            self._token = None
-        self.cache._sessions.discard(self)
-        self._entries.clear()
+        self._exit()
+
+    def __enter__(self) -> Self:
+        return self._enter()
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self._exit()
 
 
-class Transaction:
+class TransactionBase:
     """Defers invalidations until the block exits, typically after a database commit.
 
     While the block runs, entries carrying a pending tag are neither served nor
@@ -344,12 +470,12 @@ class Transaction:
     invalidation is harmless, a missing one serves stale data.
     """
 
-    def __init__(self, cache: Cache) -> None:
+    def __init__(self, cache: CacheBase) -> None:
         self.cache = cache
         self.pending: list[str] = []
         self._pending_set: set[str] = set()
-        self._token: contextvars.Token[Transaction | None] | None = None
-        self._outer: Transaction | None = None
+        self._token: contextvars.Token[TransactionBase | None] | None = None
+        self._outer: TransactionBase | None = None
 
     def add(self, tags: Iterable[str]) -> None:
         target = self._outer or self
@@ -362,13 +488,33 @@ class Transaction:
         target = self._outer or self
         return bool(target._pending_set & tag_ancestors)
 
-    async def __aenter__(self) -> Self:
+    def _enter(self) -> None:
         if not self.cache.is_open:
             raise CacheClosedError("open the cache before starting a transaction")
         outer = _transaction_var.get()
         if outer is not None and outer.cache is self.cache:
             self._outer = outer._outer or outer
         self._token = _transaction_var.set(self)
+
+    def _exit(self) -> list[str] | None:
+        """Leave the block; return the tags to invalidate, if this is the outermost one."""
+        if self._token is not None:
+            _transaction_var.reset(self._token)
+            self._token = None
+        if self._outer is not None:
+            return None
+        tags, self.pending = self.pending, []
+        self._pending_set.clear()
+        return tags
+
+
+class Transaction(TransactionBase):
+    """See :class:`TransactionBase`. Used with ``async with cache.transaction():``."""
+
+    cache: Cache
+
+    async def __aenter__(self) -> Self:
+        self._enter()
         return self
 
     async def __aexit__(
@@ -377,12 +523,8 @@ class Transaction:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        if self._token is not None:
-            _transaction_var.reset(self._token)
-            self._token = None
-        if self._outer is None:
-            tags, self.pending = self.pending, []
-            self._pending_set.clear()
+        tags = self._exit()
+        if tags:
             await self.cache._invalidate_now(tags)
 
 
@@ -443,7 +585,7 @@ class _LookupBatcher:
             item.future.set_result((entries_by_key.get(item.key), item_versions))
 
 
-def namespaced_ancestors(cache: Cache, tags: Iterable[str]) -> tuple[frozenset[str], list[str]]:
+def namespaced_ancestors(cache: CacheBase, tags: Iterable[str]) -> tuple[frozenset[str], list[str]]:
     """Ancestors of ``tags`` (plain, for sessions/transactions) and namespaced (for the backend)."""
     plain = ancestors_of_all(tags)
     return frozenset(plain), [cache.tag_name(tag) for tag in plain]

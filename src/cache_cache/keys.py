@@ -1,4 +1,4 @@
-"""Deterministic cache keys and code fingerprints.
+"""Deterministic cache keys.
 
 Keys are shared between processes, so they can't use ``hash()``: it is randomized
 for strings, and identity-based for most objects. Every argument is turned into a
@@ -7,7 +7,6 @@ canonical JSON structure instead, and the key is a digest of that structure.
 
 from __future__ import annotations
 
-import ast
 import dataclasses
 import datetime as dt
 import decimal
@@ -15,7 +14,6 @@ import enum
 import hashlib
 import inspect
 import json
-import textwrap
 import types
 import typing
 import uuid
@@ -24,7 +22,7 @@ from typing import Any
 
 from .errors import KeyEncodingError
 
-__all__ = ["KeyFormats", "describe_type", "digest", "encode_value", "fingerprint", "is_encodable"]
+__all__ = ["KeyFormats", "digest", "encode_value", "is_encodable"]
 
 KeyFormats = Mapping[type, Callable[[Any], Any]]
 
@@ -165,67 +163,3 @@ def is_encodable(annotation: Any, formats: KeyFormats) -> bool:
     if base_model is not None and issubclass(annotation, base_model):
         return True
     return issubclass(annotation, (tuple, list, set, frozenset, dict))
-
-
-def describe_type(tp: Any, _seen: frozenset[int] = frozenset()) -> str:
-    """A description of a type's structure, so that changing a model changes the keys."""
-    if id(tp) in _seen:
-        return getattr(tp, "__qualname__", repr(tp))
-    seen = _seen | {id(tp)}
-    origin = typing.get_origin(tp)
-    if origin is not None:
-        args = ",".join(describe_type(arg, seen) for arg in typing.get_args(tp))
-        return f"{describe_type(origin, seen)}[{args}]"
-    if isinstance(tp, type):
-        name = f"{tp.__module__}.{tp.__qualname__}"
-        if dataclasses.is_dataclass(tp):
-            try:
-                hints = typing.get_type_hints(tp)
-            except Exception:
-                hints = {}
-            fields = ",".join(
-                f"{f.name}:{describe_type(hints.get(f.name, f.type), seen)}"
-                for f in dataclasses.fields(tp)
-            )
-            return f"{name}({fields})"
-        base_model = _pydantic_base()
-        if base_model is not None and issubclass(tp, base_model) and tp is not base_model:
-            try:
-                schema = tp.model_json_schema()  # type: ignore[attr-defined]
-            except Exception:
-                return name
-            return f"{name}{_canonical(schema)}"
-        return name
-    return repr(tp)
-
-
-def _strip_function(node: ast.AST) -> ast.AST:
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        node.decorator_list = []
-        body = node.body
-        if (
-            body
-            and isinstance(body[0], ast.Expr)
-            and isinstance(body[0].value, ast.Constant)
-            and isinstance(body[0].value.value, str)
-        ):
-            node.body = body[1:] or [ast.Pass()]
-    return node
-
-
-def code_description(fn: Callable[..., Any]) -> str:
-    """The normalized AST of ``fn``: comments, formatting, docstring and decorators don't count."""
-    try:
-        source = textwrap.dedent(inspect.getsource(fn))
-        tree = ast.parse(source)
-        node = tree.body[0]
-    except (OSError, TypeError, SyntaxError, IndexError):
-        code = getattr(fn, "__code__", None)
-        return code.co_code.hex() if code is not None else repr(fn)
-    return ast.dump(_strip_function(node), include_attributes=False)
-
-
-def fingerprint(fn: Callable[..., Any], return_type: Any, version: str | None) -> str:
-    """Hash of the function's code, its return type's structure and an explicit version."""
-    parts = [code_description(fn), describe_type(return_type), version or ""]
-    return hashlib.sha256("\x1f".join(parts).encode()).hexdigest()[:12]

@@ -1,6 +1,6 @@
 [project]
 name = "cache-cache"
-version = "0.1.0"
+version = "0.2.0"
 description = "Async caching for Python: dedupe, per-request sessions, invisible batching, hierarchical tags, checked at startup."
 readme = "README.md"
 license = "MIT"

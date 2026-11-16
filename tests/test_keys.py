@@ -9,14 +9,7 @@ import pytest
 from pydantic import BaseModel
 
 from cache_cache.errors import KeyEncodingError
-from cache_cache.keys import (
-    code_description,
-    describe_type,
-    digest,
-    encode_value,
-    fingerprint,
-    is_encodable,
-)
+from cache_cache.keys import digest, encode_value, is_encodable
 
 
 class Color(enum.Enum):
@@ -114,45 +107,3 @@ def test_encodable_annotations(annotation: object) -> None:
 def test_unencodable_annotations(annotation: object) -> None:
     assert not is_encodable(annotation, {})
     assert is_encodable(annotation, {Opaque: lambda o: "x"}) or annotation is not Opaque
-
-
-def test_fingerprint_ignores_comments_docstrings_and_formatting() -> None:
-    def a(x: int) -> int:
-        """Doc."""
-        return x + 1  # comment
-
-    def b(x: int) -> int:
-        return x + 1
-
-    assert code_description(a).replace("name='a'", "") == code_description(b).replace(
-        "name='b'", ""
-    )
-
-
-def test_fingerprint_changes_with_code_type_and_version() -> None:
-    def a(x: int) -> int:
-        return x + 1
-
-    def c(x: int) -> int:
-        return x + 2
-
-    base = fingerprint(a, int, None)
-    assert base == fingerprint(a, int, None)
-    assert base != fingerprint(c, int, None)
-    assert base != fingerprint(a, str, None)
-    assert base != fingerprint(a, int, "2")
-
-
-def test_describe_type_follows_model_structure() -> None:
-    @dataclass
-    class V1:
-        a: int
-
-    @dataclass
-    class V2:
-        a: int
-        b: str
-
-    V2.__qualname__ = V1.__qualname__
-    assert describe_type(V1) != describe_type(V2)
-    assert "Model" in describe_type(list[Model])

@@ -40,6 +40,15 @@ cache = Cache(
 - If Redis is unreachable during a lookup, the call runs uncached, an `error` event is emitted, and nothing is stored.
 - Entries without `ttl` don't expire, so configure a `maxmemory` eviction policy.
 
+## Sync backends
+
+`SyncCache` takes sync backends with the same methods, not `async`:
+
+- `SyncMemoryBackend(max_entries=...)`: thread-safe.
+- `SyncRedisBackend(client=redis.Redis(...) | url=..., codec=..., prefix=...)`: the same layout as `RedisBackend`, so sync and async processes can share a Redis and its tags.
+
+A custom sync backend implements `cache_cache.backends.SyncBackend`. Its methods may be called from several threads at once.
+
 ## Codecs
 
 Backends that store bytes use a codec. The codec receives the decorated function's return annotation.

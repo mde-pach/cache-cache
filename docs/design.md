@@ -46,25 +46,22 @@ Python's `hash()` is randomized per process for strings, and identity-based for 
 
 The key is a SHA-256 digest of that structure.
 
-## Code fingerprints { #code-fingerprints }
+## Versions instead of code fingerprints { #versions }
 
-Each key includes a hash of:
+Keys include the cache's `version` and the function's `version=`, both set by you. See [Deploys and clearing](guide/deploys.md).
 
-- the function's normalized AST, so comments, formatting, docstrings and decorators don't count,
-- the structure of its return type, including the fields of dataclasses and pydantic models,
-- `version=`.
+An earlier design hashed each function's code into its keys. It was dropped because it was wrong in both directions:
 
-Change the function's body or its return model, and old entries are no longer read.
+- **It missed changes.** Changing a function that the cached function calls, or a model it returns, didn't change the hash.
+- **It invalidated for nothing.** A refactor that changed no result, or a Python upgrade that changed the AST, emptied the cache.
 
-Limits:
+A deploy version is explicit, covers the whole codebase, and is what you already have.
 
-- **Callees aren't hashed.** If `get()` calls `_to_product()` and you change `_to_product()`, bump `version=`.
-- **Python upgrades change the AST.** Upgrading the interpreter can change every fingerprint, which empties the cache once.
-- **Old entries aren't deleted.** They stay until they expire or are evicted. In Redis, prefer a ttl, or an eviction policy.
+`clear()` doesn't delete: every entry depends on a namespace generation counter, and clearing increments it. That takes one write, whatever the size of the cache.
 
 ## Dedupe is per process
 
-Dedupe and batching coordinate tasks in one event loop. They don't coordinate workers. Across processes, a cold key can be computed once per process. Stale-while-revalidate helps for hot keys. Distributed locks are not implemented.
+Dedupe and batching coordinate tasks in one event loop (and, for sync functions, threads in one process). They don't coordinate workers. Across processes, a cold key can be computed once per process. Stale-while-revalidate helps for hot keys. Distributed locks are not implemented.
 
 When callers share an execution:
 
@@ -81,6 +78,8 @@ When callers share an execution:
 
 Checks that need type annotations wait until the cache opens. At decoration time, classes referenced in annotations may not be defined yet.
 
-## Why no sync functions
+## Two engines
 
-The engine relies on the event loop for dedupe (shared tasks), batching (collecting calls during one iteration) and background refreshes. A sync version would need threads and locks, and would behave differently. `functools.cache` and cachetools cover sync code well.
+The async and sync engines share everything but the calling code: declarations, checks, keys, tags, sessions and the entry format. The async engine shares executions between tasks, and runs background refreshes as tasks. The sync engine shares executions between threads with locks and events, and runs refreshes in a thread pool.
+
+Batching is async only. It merges calls that are waiting at the same moment, and sync code makes one call at a time.

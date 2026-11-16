@@ -1,14 +1,23 @@
 """Storage backends."""
 
-from .base import Backend, Entry, StoreItem
-from .memory import MemoryBackend
+from .base import Backend, Entry, StoreItem, SyncBackend
+from .memory import MemoryBackend, SyncMemoryBackend
 
-__all__ = ["Backend", "Entry", "MemoryBackend", "RedisBackend", "StoreItem"]
+__all__ = [
+    "Backend",
+    "Entry",
+    "MemoryBackend",
+    "RedisBackend",
+    "StoreItem",
+    "SyncBackend",
+    "SyncMemoryBackend",
+    "SyncRedisBackend",
+]
 
 
 def __getattr__(name: str) -> object:
-    if name == "RedisBackend":
-        from .redis import RedisBackend
+    if name in ("RedisBackend", "SyncRedisBackend"):
+        from . import redis
 
-        return RedisBackend
+        return getattr(redis, name)
     raise AttributeError(name)

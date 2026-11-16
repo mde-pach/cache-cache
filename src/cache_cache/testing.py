@@ -6,19 +6,24 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
+from ._base import FunctionBase
 from .cache import _recorders_var
-from .functions import BatchedFunction, BoundCachedFunction, CachedFunction
+from .functions import BatchedFunction, BoundCachedFunction
 from .hooks import CacheEvent, EventKind
+from .sync import BoundSyncCachedFunction
 
 __all__ = ["Recorder", "record"]
 
 FunctionRef = (
-    CachedFunction[Any, Any] | BoundCachedFunction[Any, Any] | BatchedFunction[Any, Any, Any]
+    FunctionBase[Any, Any]
+    | BoundCachedFunction[Any, Any]
+    | BoundSyncCachedFunction[Any, Any]
+    | BatchedFunction[Any, Any, Any]
 )
 
 
 def _resolve(function: FunctionRef) -> object:
-    if isinstance(function, BoundCachedFunction):
+    if isinstance(function, (BoundCachedFunction, BoundSyncCachedFunction)):
         return function._function
     if isinstance(function, BatchedFunction):
         return function._parent

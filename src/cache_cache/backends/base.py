@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
-__all__ = ["Backend", "Entry", "StoreItem"]
+__all__ = ["Backend", "Entry", "StoreItem", "SyncBackend"]
 
 
 @dataclass(slots=True)
@@ -65,3 +65,27 @@ class Backend(Protocol):
     def check_type(self, tp: Any) -> None:
         """Raise :class:`~cache_cache.ConfigurationError` if ``tp`` can't be stored."""
         ...
+
+
+@runtime_checkable
+class SyncBackend(Protocol):
+    """:class:`Backend` for :class:`~cache_cache.SyncCache`: the same methods, not async.
+
+    Methods may be called from several threads at once.
+    """
+
+    def open(self) -> None: ...
+
+    def close(self) -> None: ...
+
+    def get_entries(self, keys: Sequence[str], types: Sequence[Any]) -> list[Entry | None]: ...
+
+    def set_entries(self, items: Sequence[StoreItem]) -> None: ...
+
+    def delete(self, keys: Sequence[str]) -> None: ...
+
+    def get_tag_versions(self, tags: Sequence[str]) -> list[int]: ...
+
+    def bump_tags(self, tags: Sequence[str]) -> None: ...
+
+    def check_type(self, tp: Any) -> None: ...

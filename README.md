@@ -5,7 +5,7 @@
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-Caching for `async` Python. It covers:
+Caching for Python, for `async def` and plain `def` functions. It covers:
 
 - deduping concurrent calls,
 - a per-request session layer,
@@ -56,7 +56,9 @@ async def main() -> None:
 ## Highlights
 
 - **Tag versioning.** An entry computed from data that was invalidated while it ran is never served. Invalidating `product` is a single counter increment.
-- **Deterministic keys** across processes, plus a fingerprint of each function's code and return type, so changing the code invalidates its entries.
+- **Deterministic keys** across processes.
+- **Deploy-safe:** `Cache(version=GIT_SHA)` keeps each deploy's entries apart while invalidations still reach all of them. `clear()` empties a namespace in one write.
+- **Sync too:** the same decorators work on plain functions with a `SyncCache` (Django, Flask, workers), with dedupe across threads. Only batching is async-only.
 - **Stale-while-revalidate** and **stale-if-error**, per function.
 - **Observers and middleware**, with built-in stats and logging observers.
 - **Testing:** `cache_cache.record()` counts calls, hits and batch sizes. `cache-cache check myapp` finds mistyped tags.
@@ -65,7 +67,7 @@ Documentation: **https://mde-pach.github.io/cache-cache/**
 
 ## Status
 
-Alpha (0.1). Async functions only. Dedupe and batching work per process.
+Alpha (0.2). Batching needs async functions. Dedupe and batching work per process.
 
 ## Development
 

@@ -43,6 +43,22 @@ async def square(x: int) -> int:
     return x * x
 
 
+class SyncRepo:
+    @cached(tags=["product:{pid}"])
+    def get(self, pid: int) -> Product | None: ...
+
+    @dedupe
+    def rates(self) -> dict[str, float]: ...
+
+    @invalidates("product:{pid}")
+    def update(self, pid: int) -> Product: ...
+
+
+@cached
+def sync_square(x: int) -> int:
+    return x * x
+
+
 async def main() -> None:
     repo = Repo()
     assert_type(await repo.get(1), Product | None)
@@ -58,6 +74,15 @@ async def main() -> None:
     assert_type(await square(2), int)
     assert_type(await square.peek(2), int | None)
 
+    sync_repo = SyncRepo()
+    assert_type(sync_repo.get(1), Product | None)
+    assert_type(sync_repo.get.peek(1), Product | None)
+    assert_type(sync_repo.rates(), dict[str, float])
+    assert_type(sync_repo.update(1), Product)
+    assert_type(sync_square(2), int)
+    sync_repo.get.prime(Product(), 1)
+
     await repo.get("1")  # type: ignore[arg-type]
+    sync_repo.get("1")  # type: ignore[arg-type]
     await square(1, 2)  # type: ignore[call-arg]
     await repo.get.prime("not a product", 1)  # type: ignore[arg-type]

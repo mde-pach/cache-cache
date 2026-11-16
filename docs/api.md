@@ -12,7 +12,7 @@
 
 ::: cache_cache.Cache
     options:
-      members: [open, close, session, transaction, invalidate, is_open]
+      members: [open, close, session, transaction, invalidate, clear, is_open]
 
 ::: cache_cache.Session
     options:
@@ -27,6 +27,30 @@
 ::: cache_cache.disabled
 
 ::: cache_cache.configure
+
+## Sync engine
+
+::: cache_cache.SyncCache
+    options:
+      members: [open, close, session, transaction, invalidate, clear, is_open]
+
+::: cache_cache.SyncTransaction
+    options:
+      members: false
+
+::: cache_cache.invalidate_sync
+
+::: cache_cache.SyncCachedFunction
+    options:
+      members: [refresh, peek, invalidate, forget, prime]
+
+::: cache_cache.SyncMemoryBackend
+
+::: cache_cache.backends.redis.SyncRedisBackend
+
+::: cache_cache.backends.SyncBackend
+
+::: cache_cache.SyncDontJoinOldCalls
 
 ## Decorated functions
 
