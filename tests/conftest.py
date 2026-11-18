@@ -37,6 +37,12 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> FakeClock:
 
 
 @pytest.fixture(autouse=True)
+def _deployment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests run as one deployment, like processes started by one deploy."""
+    monkeypatch.setenv("CACHE_CACHE_DEPLOYMENT", "test-deploy")
+
+
+@pytest.fixture(autouse=True)
 def _isolate_registry() -> Iterator[None]:
     """Functions declared inside a test don't leak into later tests."""
     saved = list(functions_module._registry)

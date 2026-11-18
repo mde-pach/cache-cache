@@ -34,7 +34,7 @@ async with cache:                 # once, at startup
 - **No invalidation race.** An entry computed from data that was invalidated while it was running is never served. See [How it works](design.md).
 - **Invalidation after commit.** Invalidations in `cache.transaction()` apply when the block exits, and the block reads its own writes.
 - **Stale values.** Stale-while-revalidate and stale-if-error, per function.
-- **Deploy-safe.** `Cache(version=GIT_SHA)` keeps each deploy's entries apart while invalidations still reach all of them, and `clear()` empties a namespace in one write.
+- **Empty on every deploy, automatically.** Entries are scoped to the deployment (detected from the platform), so a new deploy never reads old entries, even with the same code. Rolling deploys are safe, and a retired deployment's entries are deleted. See [Deploys](guide/deploys.md).
 - **Sync too.** The same decorators work on plain functions with a `SyncCache` (Django, Flask, workers). Dedupe works across threads.
 - **Early errors.** Tag placeholders, key, condition and bulk signatures are checked at import. Key encodings and return types are checked when the cache opens, and the `cache-cache check` command catches mistyped tags in CI.
 - **Hooks.** Observers for metrics and logs, and middleware that can change behaviour.

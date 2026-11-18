@@ -46,18 +46,18 @@ Python's `hash()` is randomized per process for strings, and identity-based for 
 
 The key is a SHA-256 digest of that structure.
 
-## Versions instead of code fingerprints { #versions }
+## Deployments instead of code fingerprints { #deployments }
 
-Keys include the cache's `version` and the function's `version=`, both set by you. See [Deploys and clearing](guide/deploys.md).
+Keys include the deployment that wrote them. See [Deploys](guide/deploys.md).
 
-An earlier design hashed each function's code into its keys. It was dropped because it was wrong in both directions:
+Two earlier designs were dropped:
 
-- **It missed changes.** Changing a function that the cached function calls, or a model it returns, didn't change the hash.
-- **It invalidated for nothing.** A refactor that changed no result, or a Python upgrade that changed the AST, emptied the cache.
+- **Hashing each function's code into its keys.** It missed changes in called functions and returned models, and emptied the cache on harmless refactors and Python upgrades.
+- **A version you set (`version=GIT_SHA`).** It depended on you, and redeploying the same code didn't empty the cache.
 
-A deploy version is explicit, covers the whole codebase, and is what you already have.
+A deployment ID comes from the platform, changes on every deploy, and stays the same across restarts within a deploy, which is what "a deploy empties the cache" means. Scoping, rather than flushing, keeps old processes from refilling the cache during a rolling deploy. Tags are not scoped, so invalidations cross deployments.
 
-`clear()` doesn't delete: every entry depends on a namespace generation counter, and clearing increments it. That takes one write, whatever the size of the cache.
+`clear()` doesn't delete: every entry depends on a namespace generation counter, and clearing increments it. Retired deployments are deleted by key prefix, once no process of theirs has sent a heartbeat for `retire_after`.
 
 ## Dedupe is per process
 

@@ -341,19 +341,6 @@ async def test_function_version_changes_the_key(cache: Cache) -> None:
     assert calls == ["1", "2"]
 
 
-async def test_cache_version_separates_entries_but_shares_tags(backend: MemoryBackend) -> None:
-    repo = Repo()
-    async with Cache(backend=backend, version="v1"):
-        await repo.get(1)
-    async with Cache(backend=backend, version="v2"):
-        await repo.get(1)  # v2 doesn't read v1's entry
-        await repo.get(1)
-        await cache_cache.invalidate("product:1")  # ...but invalidation reaches v1
-    async with Cache(backend=backend, version="v1"):
-        await repo.get(1)
-    assert repo.calls == 3
-
-
 async def test_clear(cache: Cache, backend: MemoryBackend) -> None:
     repo = Repo()
     async with cache.session() as session:
@@ -366,17 +353,6 @@ async def test_clear(cache: Cache, backend: MemoryBackend) -> None:
         await repo.get(1)
     assert repo.calls == 3
     assert len(backend) == 2  # not deleted: unreadable, they expire with their ttl
-
-
-async def test_clear_on_open(backend: MemoryBackend) -> None:
-    repo = Repo()
-    async with Cache(backend=backend):
-        await repo.get(1)
-    async with Cache(backend=backend, clear_on_open=True):
-        await repo.get(1)
-    async with Cache(backend=backend):
-        await repo.get(1)
-    assert repo.calls == 2
 
 
 async def test_clear_is_not_served_as_stale(clock: FakeClock) -> None:
@@ -393,11 +369,12 @@ async def test_clear_is_not_served_as_stale(clock: FakeClock) -> None:
         assert await f() == 2
 
 
-def test_namespace_and_version_are_validated() -> None:
+def test_namespace_is_validated() -> None:
+    for bad in ["a:b", "a*", "", "a b"]:
+        with pytest.raises(ValueError):
+            Cache(namespace=bad)
     with pytest.raises(ValueError):
-        Cache(namespace="a:b")
-    with pytest.raises(ValueError):
-        Cache(version="1|2")
+        Cache(retire_after=60, heartbeat_interval=60)
 
 
 async def test_namespace_separates_caches(backend: MemoryBackend) -> None:

@@ -5,7 +5,7 @@
 ```python
 from cache_cache import SyncCache, cached, invalidates
 
-cache = SyncCache(namespace="shop", version=GIT_SHA)
+cache = SyncCache(namespace="shop")
 
 
 class ProductRepo:
@@ -27,7 +27,7 @@ The decorator picks the engine from the function: `async def` uses the current `
 
 ## What's the same
 
-- The session and backend layers, `ttl`, `session_only`, `version`, `clear()`.
+- The session and backend layers, `ttl`, `session_only`, deployments, `clear()`.
 - Tags, `@invalidates`, transactions and tag versioning.
 - Key rules, conditions, key functions and checks.
 - Stale-while-revalidate and stale-if-error.
@@ -43,6 +43,7 @@ The decorator picks the engine from the function: `async def` uses the current `
 | Invalidate imperatively | `await cache_cache.invalidate(...)` | `cache_cache.invalidate_sync(...)` or `cache.invalidate(...)` |
 | Dedupe | concurrent tasks share one execution | concurrent **threads** share one execution |
 | Background refreshes | tasks | a thread pool (`refresh_workers=4`) |
+| Heartbeats and deleting old deployments | a task | a daemon thread |
 | Batching | `@get.batched(...)` | not available |
 | Backends | `MemoryBackend`, `RedisBackend` | `SyncMemoryBackend`, `SyncRedisBackend` |
 | Middleware | `async def __call__(call, call_next)` | `def __call__(call, call_next)`, e.g. `SyncDontJoinOldCalls` |

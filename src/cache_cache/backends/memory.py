@@ -27,6 +27,7 @@ class SyncMemoryBackend:
         self.max_entries = max_entries
         self._entries: OrderedDict[str, tuple[Entry, float | None]] = OrderedDict()
         self._tags: dict[str, int] = {}
+        self._scopes: dict[str, float] = {}
         self._lock = threading.Lock()
 
     def open(self) -> None:
@@ -81,6 +82,27 @@ class SyncMemoryBackend:
     def check_type(self, tp: Any) -> None:
         return None
 
+    def heartbeat(self, scope: str) -> None:
+        with self._lock:
+            self._scopes[scope] = _clock.now()
+
+    def retired_scopes(self, idle_for: float) -> list[str]:
+        limit = _clock.now() - idle_for
+        with self._lock:
+            return [scope for scope, seen in self._scopes.items() if seen <= limit]
+
+    def drop_scope(self, scope: str, idle_for: float) -> int:
+        prefix = f"{scope}:"
+        with self._lock:
+            seen = self._scopes.get(scope)
+            if seen is not None and seen > _clock.now() - idle_for:
+                return 0
+            doomed = [key for key in self._entries if key.startswith(prefix)]
+            for key in doomed:
+                del self._entries[key]
+            self._scopes.pop(scope, None)
+            return len(doomed)
+
     def __len__(self) -> int:
         return len(self._entries)
 
@@ -129,6 +151,15 @@ class MemoryBackend:
 
     def check_type(self, tp: Any) -> None:
         return None
+
+    async def heartbeat(self, scope: str) -> None:
+        self._store.heartbeat(scope)
+
+    async def retired_scopes(self, idle_for: float) -> list[str]:
+        return self._store.retired_scopes(idle_for)
+
+    async def drop_scope(self, scope: str, idle_for: float) -> int:
+        return self._store.drop_scope(scope, idle_for)
 
     def __len__(self) -> int:
         return len(self._store)

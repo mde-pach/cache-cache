@@ -6,7 +6,14 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
-__all__ = ["Backend", "Entry", "StoreItem", "SyncBackend"]
+__all__ = [
+    "Backend",
+    "DeploymentRegistry",
+    "Entry",
+    "StoreItem",
+    "SyncBackend",
+    "SyncDeploymentRegistry",
+]
 
 
 @dataclass(slots=True)
@@ -89,3 +96,40 @@ class SyncBackend(Protocol):
     def bump_tags(self, tags: Sequence[str]) -> None: ...
 
     def check_type(self, tp: Any) -> None: ...
+
+
+@runtime_checkable
+class DeploymentRegistry(Protocol):
+    """Optional backend capability: delete the entries of deployments that are gone.
+
+    A *scope* is ``"<namespace>:<deployment token>"``. Every entry key of that
+    deployment starts with ``scope + ":"``. Backends without this capability still
+    work: old entries then expire with their ttl.
+    """
+
+    async def heartbeat(self, scope: str) -> None:
+        """Record that a process of ``scope`` is alive, using the backend's clock."""
+        ...
+
+    async def retired_scopes(self, idle_for: float) -> list[str]:
+        """Scopes with no heartbeat for ``idle_for`` seconds."""
+        ...
+
+    async def drop_scope(self, scope: str, idle_for: float) -> int:
+        """Delete every entry of ``scope`` and forget it; return how many were deleted.
+
+        Must do nothing if the scope had a heartbeat within ``idle_for`` seconds, and
+        should let only one process drop a given scope at a time.
+        """
+        ...
+
+
+@runtime_checkable
+class SyncDeploymentRegistry(Protocol):
+    """:class:`DeploymentRegistry` for sync backends."""
+
+    def heartbeat(self, scope: str) -> None: ...
+
+    def retired_scopes(self, idle_for: float) -> list[str]: ...
+
+    def drop_scope(self, scope: str, idle_for: float) -> int: ...

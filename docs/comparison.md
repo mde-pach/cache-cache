@@ -14,7 +14,7 @@ This comparison is based on each project's public documentation as of 2026. "Not
 | Invalidation after a DB commit | `cache.transaction()` | No | No | No | Not documented | Transaction support | Not documented | No |
 | Stale-while-revalidate | Yes | No | No | No | Not documented | Yes | Yes | No |
 | Stale-if-error | Yes | No | No | No | Not documented | Yes | Not documented | No |
-| Keys change on deploy | Cache `version`, O(1) `clear()` | No | No | No | Not documented | Not documented | Not documented | No |
+| Empty on deploy | Automatic, per deployment | No | No | No | Not documented | Not documented | Not documented | No |
 | Conditions on arguments and result | Yes | No | No | No | Partial | Yes | Partial | No |
 | Prime values | Yes | No | Manual | No | Yes | Yes | Yes | Yes |
 | Observers and middleware | Yes | No | No | No | Plugins | Middleware | Proxy backends | No |

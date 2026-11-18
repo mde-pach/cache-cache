@@ -49,6 +49,10 @@ cache = Cache(
 
 A custom sync backend implements `cache_cache.backends.SyncBackend`. Its methods may be called from several threads at once.
 
+## Deleting retired deployments
+
+A backend can also implement `cache_cache.backends.DeploymentRegistry` (or `SyncDeploymentRegistry`): `heartbeat(scope)`, `retired_scopes(idle_for)` and `drop_scope(scope, idle_for)`. A scope is `"<namespace>:<deployment token>"`, and every entry key of that deployment starts with `scope + ":"`. See [Deploys](deploys.md#deleting-old-deployments). The built-in backends implement it. Redis uses a sorted set timed with the server's `TIME`, and `SCAN` + `UNLINK` behind a lock.
+
 ## Codecs
 
 Backends that store bytes use a codec. The codec receives the decorated function's return annotation.

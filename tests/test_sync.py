@@ -383,17 +383,28 @@ def test_dont_join_old_calls_sync(clock: FakeClock) -> None:
     assert calls == 2
 
 
-def test_clear_and_version(sync_backend: SyncMemoryBackend) -> None:
+def test_clear_and_deployments(sync_backend: SyncMemoryBackend) -> None:
     repo = Repo()
-    with SyncCache(backend=sync_backend, version="v1") as cache:
+    with SyncCache(backend=sync_backend) as cache:
         repo.get(1)
         cache.clear()
         repo.get(1)
-    with SyncCache(backend=sync_backend, version="v2"):
+    with SyncCache(backend=sync_backend):
+        repo.get(1)  # same deployment: shared
+    with SyncCache(backend=sync_backend, deployment="next"):
+        repo.get(1)  # new deployment: not shared
+    assert repo.calls == [1, 1, 1]
+
+
+def test_sync_retired_deployment_is_collected(clock: FakeClock) -> None:
+    backend = SyncMemoryBackend()
+    repo = Repo()
+    with SyncCache(backend=backend, deployment="old"):
         repo.get(1)
-    with SyncCache(backend=sync_backend, clear_on_open=True):
-        repo.get(1)
-    assert repo.calls == [1, 1, 1, 1]
+    clock.advance(601)
+    with SyncCache(backend=backend, deployment="new") as cache:
+        assert len(backend) == 0  # collected when "new" opened
+        assert cache.collect_retired() == 0
 
 
 def test_sync_redis_backend() -> None:

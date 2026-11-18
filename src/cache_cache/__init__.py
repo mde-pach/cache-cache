@@ -4,7 +4,16 @@ Works on ``async def`` functions (:class:`Cache`) and plain ``def`` functions (:
 """
 
 from ._base import DEFAULT
-from .backends import Backend, Entry, MemoryBackend, StoreItem, SyncBackend, SyncMemoryBackend
+from .backends import (
+    Backend,
+    DeploymentRegistry,
+    Entry,
+    MemoryBackend,
+    StoreItem,
+    SyncBackend,
+    SyncDeploymentRegistry,
+    SyncMemoryBackend,
+)
 from .cache import (
     Cache,
     Session,
@@ -17,6 +26,7 @@ from .cache import (
 )
 from .codecs import Codec, PickleCodec, PydanticCodec
 from .decorators import cached, dedupe, invalidates
+from .deployment import Deployment
 from .errors import (
     CacheCacheError,
     CacheClosedError,
@@ -52,7 +62,7 @@ from .sync import (
 )
 from .testing import Recorder, record
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "DEFAULT",
@@ -69,6 +79,8 @@ __all__ = [
     "CachedFunction",
     "Codec",
     "ConfigurationError",
+    "Deployment",
+    "DeploymentRegistry",
     "DontJoinOldCalls",
     "Entry",
     "FunctionInfo",
@@ -91,6 +103,7 @@ __all__ = [
     "SyncCache",
     "SyncCachedCall",
     "SyncCachedFunction",
+    "SyncDeploymentRegistry",
     "SyncDontJoinOldCalls",
     "SyncMemoryBackend",
     "SyncMiddleware",

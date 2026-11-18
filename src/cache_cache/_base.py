@@ -298,10 +298,7 @@ class FunctionBase(Generic[P, R]):
                 cache.backend.check_type(static.return_type)
             except ConfigurationError as exc:
                 raise ConfigurationError(f"{self.name}: {exc}") from exc
-        if cache is None:
-            prefix = f"-:-:{self.name}"
-        else:
-            prefix = f"{cache.namespace}:{cache.version or '-'}:{self.name}"
+        prefix = f"-:-:{self.name}" if cache is None else f"{cache.key_prefix}:{self.name}"
         return Plan(
             static=static,
             ignored=frozenset(ignored),

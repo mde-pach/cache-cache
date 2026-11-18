@@ -1,6 +1,6 @@
 [project]
 name = "cache-cache"
-version = "0.2.0"
+version = "0.3.0"
 description = "Async caching for Python: dedupe, per-request sessions, invisible batching, hierarchical tags, checked at startup."
 readme = "README.md"
 license = "MIT"
@@ -73,7 +73,7 @@ select = ["E", "F", "W", "I", "B", "UP", "RUF", "ASYNC"]
 ignore = ["RUF012"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["B", "RUF"]
+"tests/*" = ["B", "RUF", "ASYNC110"]
 
 [tool.mypy]
 python_version = "3.11"

@@ -12,7 +12,7 @@
 
 ::: cache_cache.Cache
     options:
-      members: [open, close, session, transaction, invalidate, clear, is_open]
+      members: [open, close, session, transaction, invalidate, clear, collect_retired, is_open]
 
 ::: cache_cache.Session
     options:
@@ -23,6 +23,10 @@
       members: false
 
 ::: cache_cache.invalidate
+
+::: cache_cache.deployment.DEPLOYMENT_ENV_VARS
+
+::: cache_cache.deployment.Deployment
 
 ::: cache_cache.disabled
 
@@ -89,6 +93,8 @@
 ::: cache_cache.backends.Entry
 
 ::: cache_cache.backends.StoreItem
+
+::: cache_cache.backends.DeploymentRegistry
 
 ::: cache_cache.MemoryBackend
 

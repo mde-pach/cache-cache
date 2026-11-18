@@ -57,7 +57,7 @@ async def main() -> None:
 
 - **Tag versioning.** An entry computed from data that was invalidated while it ran is never served. Invalidating `product` is a single counter increment.
 - **Deterministic keys** across processes.
-- **Deploy-safe:** `Cache(version=GIT_SHA)` keeps each deploy's entries apart while invalidations still reach all of them. `clear()` empties a namespace in one write.
+- **Empty on every deploy, automatically:** entries are scoped to the deployment, detected from Vercel, Railway, Heroku, Fly.io, Cloud Run or `CACHE_CACHE_DEPLOYMENT`. Rolling deploys are safe, and old deployments' entries are deleted once their last process is gone.
 - **Sync too:** the same decorators work on plain functions with a `SyncCache` (Django, Flask, workers), with dedupe across threads. Only batching is async-only.
 - **Stale-while-revalidate** and **stale-if-error**, per function.
 - **Observers and middleware**, with built-in stats and logging observers.

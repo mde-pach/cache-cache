@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.0 — unreleased
+
+- **The cache empties on every deploy, automatically.** Entries are scoped to the deployment, so a
+  new deploy never reads entries from a previous one, even when the same code is redeployed. A
+  restart within a deploy keeps them. Tags stay shared, so invalidations cross deployments during a
+  rolling deploy. Old processes write into their own scope and can't refill the new one, which is
+  what breaks flush-on-deploy.
+- `Cache(deployment="auto")` detects the ID from `CACHE_CACHE_DEPLOYMENT`, `VERCEL_DEPLOYMENT_ID`,
+  `RAILWAY_DEPLOYMENT_ID`, `HEROKU_RELEASE_VERSION`, `FLY_IMAGE_REF` or `K_REVISION`. When none is
+  set, entries are scoped to the process, with a warning. `deployment="process"`, an explicit ID,
+  or `None` (entries survive deploys) are also accepted.
+- **Retired deployments are deleted.** Processes send a heartbeat for their deployment, and a
+  deployment with no heartbeat for `retire_after` (10 min) has its entries deleted (Redis: `SCAN` +
+  `UNLINK` behind a lock, timed with the server clock). New `DeploymentRegistry` backend capability,
+  `collect_retired()`, and a `retire` event.
+- **Removed:** `Cache(version=...)` and `clear_on_open`. `clear()` and the function-level
+  `version=` remain.
+- Namespaces are now restricted to letters, digits, `_`, `.` and `-`.
+
 ## 0.2.0 — unreleased
 
 - **Sync support.** `@cached`, `@dedupe` and `@invalidates` work on plain `def` functions with a

@@ -16,6 +16,12 @@ if TYPE_CHECKING:  # pragma: no cover
 __all__ = ["RedisBackend", "SyncRedisBackend"]
 
 _SEPARATOR = b"\n"
+_GC_LOCK_SECONDS = 300
+_UNLINK_BATCH = 500
+
+
+def _glob_escape(text: str) -> str:
+    return "".join(f"\\{char}" if char in "*?[]\\" else char for char in text)
 
 
 class _RedisFormat:
@@ -30,6 +36,25 @@ class _RedisFormat:
 
     def _tag_key(self, tag: str) -> str:
         return f"{self.prefix}t:{tag}"
+
+    @property
+    def _registry_key(self) -> str:
+        return f"{self.prefix}deployments"
+
+    def _gc_lock_key(self, scope: str) -> str:
+        return f"{self.prefix}gc:{scope}"
+
+    def _scope_pattern(self, scope: str) -> str:
+        return f"{_glob_escape(self.prefix)}e:{_glob_escape(scope)}:*"
+
+    @staticmethod
+    def _seconds(time_reply: tuple[int, int]) -> float:
+        seconds, micros = time_reply
+        return int(seconds) + int(micros) / 1_000_000
+
+    @staticmethod
+    def _text(value: Any) -> str:
+        return value.decode() if isinstance(value, bytes) else str(value)
 
     def _decode(self, data: bytes | str | None, tp: Any) -> Entry | None:
         if data is None:
@@ -142,6 +167,41 @@ class RedisBackend(_RedisFormat):
                 pipe.incr(self._tag_key(tag))
             await pipe.execute()
 
+    # -- deployment registry (times come from the Redis server, not this host) ---------
+
+    async def _now(self) -> float:
+        return self._seconds(await self.client.time())
+
+    async def heartbeat(self, scope: str) -> None:
+        await self.client.zadd(self._registry_key, {scope: await self._now()})
+
+    async def retired_scopes(self, idle_for: float) -> list[str]:
+        limit = await self._now() - idle_for
+        found = await self.client.zrangebyscore(self._registry_key, "-inf", limit)
+        return [self._text(scope) for scope in found]
+
+    async def drop_scope(self, scope: str, idle_for: float) -> int:
+        lock = self._gc_lock_key(scope)
+        if not await self.client.set(lock, b"1", nx=True, ex=_GC_LOCK_SECONDS):
+            return 0  # another process is dropping it
+        try:
+            seen = await self.client.zscore(self._registry_key, scope)
+            if seen is not None and seen > await self._now() - idle_for:
+                return 0  # a process of this deployment came back
+            deleted = 0
+            batch: list[bytes | str] = []
+            async for key in self.client.scan_iter(match=self._scope_pattern(scope), count=1000):
+                batch.append(key)
+                if len(batch) >= _UNLINK_BATCH:
+                    deleted += await self.client.unlink(*batch)
+                    batch = []
+            if batch:
+                deleted += await self.client.unlink(*batch)
+            await self.client.zrem(self._registry_key, scope)
+            return deleted
+        finally:
+            await self.client.delete(lock)
+
 
 class SyncRedisBackend(_RedisFormat):
     """:class:`RedisBackend` for :class:`~cache_cache.SyncCache`, on a ``redis.Redis`` client.
@@ -212,3 +272,37 @@ class SyncRedisBackend(_RedisFormat):
             for tag in tags:
                 pipe.incr(self._tag_key(tag))
             pipe.execute()
+
+    # -- deployment registry (times come from the Redis server, not this host) ---------
+
+    def _now(self) -> float:
+        return self._seconds(self.client.time())
+
+    def heartbeat(self, scope: str) -> None:
+        self.client.zadd(self._registry_key, {scope: self._now()})
+
+    def retired_scopes(self, idle_for: float) -> list[str]:
+        found = self.client.zrangebyscore(self._registry_key, "-inf", self._now() - idle_for)
+        return [self._text(scope) for scope in found]
+
+    def drop_scope(self, scope: str, idle_for: float) -> int:
+        lock = self._gc_lock_key(scope)
+        if not self.client.set(lock, b"1", nx=True, ex=_GC_LOCK_SECONDS):
+            return 0
+        try:
+            seen = self.client.zscore(self._registry_key, scope)
+            if seen is not None and seen > self._now() - idle_for:
+                return 0
+            deleted = 0
+            batch: list[bytes | str] = []
+            for key in self.client.scan_iter(match=self._scope_pattern(scope), count=1000):
+                batch.append(key)
+                if len(batch) >= _UNLINK_BATCH:
+                    deleted += self.client.unlink(*batch)
+                    batch = []
+            if batch:
+                deleted += self.client.unlink(*batch)
+            self.client.zrem(self._registry_key, scope)
+            return deleted
+        finally:
+            self.client.delete(lock)

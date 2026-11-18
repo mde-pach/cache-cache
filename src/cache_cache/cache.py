@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
+import re
 import threading
 import weakref
 from collections import OrderedDict
@@ -14,8 +15,9 @@ from dataclasses import dataclass, field
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Literal, Self
 
-from .backends.base import Backend, Entry
+from .backends.base import Backend, DeploymentRegistry, Entry
 from .backends.memory import MemoryBackend
+from .deployment import Deployment, DeploymentSetting, resolve_deployment
 from .errors import CacheClosedError
 from .hooks import CacheEvent, Middleware, Observer
 from .keys import KeyFormats
@@ -51,6 +53,8 @@ _disabled_var: contextvars.ContextVar[bool] = contextvars.ContextVar(
 _recorders_var: contextvars.ContextVar[tuple[Recorder, ...]] = contextvars.ContextVar(
     "cache_cache_recorders", default=()
 )
+
+_NAMESPACE = re.compile(r"[A-Za-z0-9_.-]+")
 
 _open_caches: list[CacheBase] = []
 _open_lock = threading.Lock()
@@ -138,29 +142,31 @@ class CacheBase:
         self,
         *,
         namespace: str,
-        version: str | None,
+        deployment: DeploymentSetting,
+        retire_after: float,
+        heartbeat_interval: float,
         ttl: float | None,
         observers: Sequence[Observer],
         key_ignore: Sequence[type],
         key_formats: KeyFormats | None,
         shutdown_timeout: float,
-        clear_on_open: bool,
     ) -> None:
-        for label, value in (("namespace", namespace), ("version", version or "")):
-            if any(char in value for char in ":|#"):
-                raise ValueError(f"{label} can't contain ':', '|' or '#'")
-        if not namespace:
-            raise ValueError("namespace can't be empty")
+        if not _NAMESPACE.fullmatch(namespace):
+            raise ValueError("namespace must be letters, digits, '_', '.' or '-'")
         if ttl is not None and ttl <= 0:
             raise ValueError("ttl must be positive, or None for no expiry")
+        if heartbeat_interval <= 0 or retire_after < 2 * heartbeat_interval:
+            raise ValueError("retire_after must be at least twice heartbeat_interval")
         self.namespace = namespace
-        self.version = version
+        self.deployment_setting = deployment
+        self.retire_after = retire_after
+        self.heartbeat_interval = heartbeat_interval
+        self.deployment: Deployment | None = None
         self.ttl = ttl
         self.observers: list[Observer] = list(observers)
         self.key_ignore: tuple[type, ...] = tuple(key_ignore)
         self.key_formats: dict[type, Callable[[Any], Any]] = dict(key_formats or {})
         self.shutdown_timeout = shutdown_timeout
-        self.clear_on_open = clear_on_open
         self._open = False
         self._sessions: weakref.WeakSet[Session] = weakref.WeakSet()
         self._sessions_lock = threading.Lock()
@@ -175,8 +181,33 @@ class CacheBase:
         return f"{self.namespace}#generation"
 
     def tag_name(self, tag: str) -> str:
-        """The tag as stored in the backend: namespaced (but not versioned)."""
+        """The tag as stored in the backend: namespaced, shared by every deployment."""
         return f"{self.namespace}|{tag}"
+
+    def _resolve_deployment(self) -> Deployment:
+        """Resolved once, on the first open: a process keeps its scope across reopens."""
+        if self.deployment is None:
+            self.deployment = resolve_deployment(self.deployment_setting)
+        return self.deployment
+
+    @property
+    def scope(self) -> str | None:
+        """``"<namespace>:<deployment token>"``, the prefix of every entry key, or ``None``."""
+        token = self.deployment.token if self.deployment is not None else None
+        return None if token is None else f"{self.namespace}:{token}"
+
+    @property
+    def key_prefix(self) -> str:
+        return self.scope or f"{self.namespace}:-"
+
+    def _retired(self, scopes: Sequence[str]) -> list[str]:
+        """Retired scopes this cache may delete: same namespace, not its own."""
+        own = self.scope
+        mine = f"{self.namespace}:"
+        return [scope for scope in scopes if scope != own and scope.startswith(mine)]
+
+    def _registry_enabled(self, registry_type: type) -> bool:
+        return self.scope is not None and isinstance(self.backend, registry_type)
 
     def session(self, *, max_entries: int | None = None) -> Session:
         """A short-lived layer for one unit of work: a request, a job, a test."""
@@ -212,9 +243,9 @@ class CacheBase:
 
     def __repr__(self) -> str:
         state = "open" if self._open else "closed"
-        version = f" version={self.version!r}" if self.version else ""
+        deployment = f" deployment={self.deployment.label!r}" if self.deployment else ""
         return (
-            f"<{type(self).__name__} {self.namespace!r}{version} "
+            f"<{type(self).__name__} {self.namespace!r}{deployment} "
             f"{type(self.backend).__name__} {state}>"
         )
 
@@ -225,9 +256,15 @@ class Cache(CacheBase):
     Args:
         backend: where entries live. Defaults to a :class:`MemoryBackend`.
         namespace: prefix for every key and tag, so apps can share a backend.
-        version: your deploy's version (a git SHA, a package version). Entries written
-            by one version are never read by another, while tags stay shared, so an
-            invalidation reaches every version during a rolling deploy.
+        deployment: which deployment entries belong to. A new deployment never reads the
+            entries of a previous one, even with the same code; tags stay shared.
+            ``"auto"`` (default) reads the ID from the environment (see
+            :data:`~cache_cache.deployment.DEPLOYMENT_ENV_VARS`), and falls back to this
+            process with a warning. ``"process"`` scopes to this process. Any other string
+            is the ID itself. ``None`` doesn't scope: entries survive deploys.
+        retire_after: delete the entries of a deployment once it has had no live process
+            for this many seconds (backends with a deployment registry only).
+        heartbeat_interval: seconds between heartbeats of this process's deployment.
         ttl: default lifetime, in seconds, for ``@cached`` functions that don't set ``ttl``.
             ``None`` means no expiry.
         observers: receive every :class:`~cache_cache.CacheEvent`.
@@ -235,8 +272,6 @@ class Cache(CacheBase):
         shutdown_timeout: on exit, seconds to wait for background refreshes before cancelling them.
         key_ignore: argument types never part of a key (database sessions, requests...).
         key_formats: how a type appears in a key, e.g. ``{Decimal: lambda d: str(d)}``.
-        clear_on_open: call :meth:`clear` when the cache opens. With a shared backend,
-            every process start clears it for every process; prefer ``version``.
     """
 
     kind: Literal["async", "sync"] = "async"
@@ -246,27 +281,31 @@ class Cache(CacheBase):
         *,
         backend: Backend | None = None,
         namespace: str = "cc",
-        version: str | None = None,
+        deployment: DeploymentSetting = "auto",
+        retire_after: float = 600,
+        heartbeat_interval: float = 60,
         ttl: float | None = 3600,
         observers: Sequence[Observer] = (),
         middleware: Sequence[Middleware] = (),
         shutdown_timeout: float = 5.0,
         key_ignore: Sequence[type] = (),
         key_formats: KeyFormats | None = None,
-        clear_on_open: bool = False,
     ) -> None:
         super().__init__(
             namespace=namespace,
-            version=version,
+            deployment=deployment,
+            retire_after=retire_after,
+            heartbeat_interval=heartbeat_interval,
             ttl=ttl,
             observers=observers,
             key_ignore=key_ignore,
             key_formats=key_formats,
             shutdown_timeout=shutdown_timeout,
-            clear_on_open=clear_on_open,
         )
         self.backend: Backend = backend if backend is not None else MemoryBackend()
         self.middleware: list[Middleware] = list(middleware)
+        self._maintenance: asyncio.Task[None] | None = None
+        self._stop_maintenance: asyncio.Event | None = None
         self._background: set[asyncio.Task[Any]] = set()
         self._lookups = _LookupBatcher(self)
 
@@ -278,17 +317,31 @@ class Cache(CacheBase):
             return
         from ._base import validate_registered
 
+        self._resolve_deployment()
         validate_registered(self, "async")
         await self.backend.open()
-        if self.clear_on_open:
-            await self.backend.bump_tags([self.generation_tag])
         self._register_open()
+        if self._registry_enabled(DeploymentRegistry):
+            await self._heartbeat()
+            self._stop_maintenance = asyncio.Event()
+            self._maintenance = asyncio.get_running_loop().create_task(
+                self._maintain(self._stop_maintenance)
+            )
 
     async def close(self) -> None:
         """Wait for background work (up to ``shutdown_timeout``), then close the backend."""
         if not self._open:
             return
         self._register_closed()
+        if self._maintenance is not None and self._stop_maintenance is not None:
+            # Let a backend call in progress finish: cancelling it midway can leave a
+            # connection in a bad state. Cancel only if it takes too long.
+            self._stop_maintenance.set()
+            _done, overdue = await asyncio.wait({self._maintenance}, timeout=self.shutdown_timeout)
+            for task in overdue:
+                task.cancel()
+            await asyncio.gather(self._maintenance, return_exceptions=True)
+            self._maintenance = None
         pending = [task for task in self._background if not task.done()]
         if pending:
             _done, still_running = await asyncio.wait(pending, timeout=self.shutdown_timeout)
@@ -313,6 +366,45 @@ class Cache(CacheBase):
     def transaction(self) -> Transaction:
         """Collect invalidations in this block and apply them when it exits."""
         return Transaction(self)
+
+    # -- deployments ---------------------------------------------------------------
+
+    async def _heartbeat(self) -> None:
+        assert self.scope is not None and isinstance(self.backend, DeploymentRegistry)
+        try:
+            await self.backend.heartbeat(self.scope)
+        except Exception as exc:
+            logger.warning("cache-cache heartbeat failed: %r", exc)
+
+    async def collect_retired(self) -> int:
+        """Delete the entries of deployments with no live process for ``retire_after``.
+
+        Runs on its own after every heartbeat; call it to collect now. Returns the
+        number of entries deleted.
+        """
+        backend = self.backend
+        if not self._registry_enabled(DeploymentRegistry):
+            return 0
+        assert isinstance(backend, DeploymentRegistry)
+        deleted = 0
+        for scope in self._retired(await backend.retired_scopes(self.retire_after)):
+            count = await backend.drop_scope(scope, self.retire_after)
+            deleted += count
+            emit(self, CacheEvent("retire", tags=(scope,), size=count))
+        return deleted
+
+    async def _maintain(self, stop: asyncio.Event) -> None:
+        while not stop.is_set():
+            try:
+                await self.collect_retired()
+            except Exception as exc:
+                logger.warning("cache-cache: collecting retired deployments failed: %r", exc)
+            try:
+                await asyncio.wait_for(stop.wait(), self.heartbeat_interval)
+                return
+            except TimeoutError:
+                pass
+            await self._heartbeat()
 
     # -- invalidation --------------------------------------------------------------
 

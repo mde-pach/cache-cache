@@ -49,6 +49,7 @@ EventKind = Literal[
     "bypass",  # caching skipped: condition, transaction or disabled()
     "invalidate",  # tags were invalidated; see ``tags``
     "clear",  # the namespace was cleared
+    "retire",  # a retired deployment's entries were deleted; ``tags`` = (scope,), ``size`` = count
     "error",  # the function or the backend raised; see ``error``
 ]
 

@@ -18,19 +18,16 @@ Create one cache per application, at module level:
 
 ```python
 # myapp/cache.py
-import os
-
 from cache_cache import Cache, MemoryBackend
 
 cache = Cache(
-    namespace="myapp",                          # prefix for every key and tag
-    version=os.environ.get("GIT_SHA"),          # each deploy reads its own entries
-    backend=MemoryBackend(),                    # the default; see Backends for Redis
-    ttl=300,                                    # default lifetime for @cached functions
+    namespace="myapp",          # prefix for every key and tag
+    backend=MemoryBackend(),    # the default; see Backends for Redis
+    ttl=300,                    # default lifetime for @cached functions, in seconds
 )
 ```
 
-`version` matters once entries outlive a process, as they do in Redis: see [Deploys and clearing](guide/deploys.md). For plain `def` functions, create a `SyncCache` instead: see [Sync code](guide/sync.md).
+Entries are scoped to the current deployment, read from your platform's environment, so every deploy starts with an empty cache. Outside a known platform, set `CACHE_CACHE_DEPLOYMENT`: see [Deploys](guide/deploys.md). For plain `def` functions, create a `SyncCache` instead: see [Sync code](guide/sync.md).
 
 ## Decorate functions
 

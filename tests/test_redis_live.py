@@ -53,3 +53,28 @@ def test_sync_round_trip_on_real_redis() -> None:
         invalidate_sync("live-sync")
         f(3)
     assert calls == 6
+
+
+async def test_retired_deployment_is_deleted_on_real_redis() -> None:
+    from redis.asyncio import Redis
+
+    @cached(ttl=30)
+    async def g(x: int) -> int:
+        return x
+
+    prefix = f"cc-test-{uuid.uuid4().hex[:8]}:"
+    fast = {"heartbeat_interval": 0.05, "retire_after": 0.1}
+    assert URL is not None
+    async with Cache(backend=RedisBackend(url=URL, prefix=prefix), deployment="old", **fast):
+        await asyncio.gather(*(g(i) for i in range(1200)))  # more than one SCAN/UNLINK batch
+    async with Cache(backend=RedisBackend(url=URL, prefix=prefix), deployment="new", **fast):
+        client = Redis.from_url(URL)
+        try:
+            for _ in range(100):
+                if not await client.keys(f"{prefix}e:*"):
+                    break
+                await asyncio.sleep(0.05)
+            assert await client.keys(f"{prefix}e:*") == []
+        finally:
+            await client.delete(*(await client.keys(f"{prefix}*")) or [f"{prefix}none"])
+            await client.aclose()

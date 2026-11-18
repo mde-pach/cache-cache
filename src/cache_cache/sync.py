@@ -27,7 +27,7 @@ from typing import (
 
 from . import _clock
 from ._base import NO_INSTANCE, Ctx, FunctionBase, Options, validate_registered
-from .backends.base import Entry, StoreItem, SyncBackend
+from .backends.base import Entry, StoreItem, SyncBackend, SyncDeploymentRegistry
 from .backends.memory import SyncMemoryBackend
 from .cache import (
     CacheBase,
@@ -41,6 +41,7 @@ from .cache import (
     logger,
     versions_match,
 )
+from .deployment import DeploymentSetting
 from .errors import ConfigurationError, NoActiveSession
 from .hooks import CacheEvent, Lookup, Observer, SyncCachedCall, SyncMiddleware, SyncNext
 from .keys import KeyFormats
@@ -93,25 +94,27 @@ class SyncCache(CacheBase):
         *,
         backend: SyncBackend | None = None,
         namespace: str = "cc",
-        version: str | None = None,
+        deployment: DeploymentSetting = "auto",
+        retire_after: float = 600,
+        heartbeat_interval: float = 60,
         ttl: float | None = 3600,
         observers: Sequence[Observer] = (),
         middleware: Sequence[SyncMiddleware] = (),
         shutdown_timeout: float = 5.0,
         key_ignore: Sequence[type] = (),
         key_formats: KeyFormats | None = None,
-        clear_on_open: bool = False,
         refresh_workers: int = 4,
     ) -> None:
         super().__init__(
             namespace=namespace,
-            version=version,
+            deployment=deployment,
+            retire_after=retire_after,
+            heartbeat_interval=heartbeat_interval,
             ttl=ttl,
             observers=observers,
             key_ignore=key_ignore,
             key_formats=key_formats,
             shutdown_timeout=shutdown_timeout,
-            clear_on_open=clear_on_open,
         )
         self.backend: SyncBackend = backend if backend is not None else SyncMemoryBackend()
         self.middleware: list[SyncMiddleware] = list(middleware)
@@ -119,6 +122,8 @@ class SyncCache(CacheBase):
         self._executor: concurrent.futures.ThreadPoolExecutor | None = None
         self._background: set[concurrent.futures.Future[Any]] = set()
         self._background_lock = threading.Lock()
+        self._maintenance: threading.Thread | None = None
+        self._stop = threading.Event()
 
     # -- lifecycle -----------------------------------------------------------------
 
@@ -126,17 +131,27 @@ class SyncCache(CacheBase):
         """Open the backend and check every sync decorated function against this cache."""
         if self._open:
             return
+        self._resolve_deployment()
         validate_registered(self, "sync")
         self.backend.open()
-        if self.clear_on_open:
-            self.backend.bump_tags([self.generation_tag])
         self._register_open()
+        if self._registry_enabled(SyncDeploymentRegistry):
+            self._heartbeat()
+            self._stop.clear()
+            self._maintenance = threading.Thread(
+                target=self._maintain, name="cache-cache-maintenance", daemon=True
+            )
+            self._maintenance.start()
 
     def close(self) -> None:
         """Wait for background refreshes (up to ``shutdown_timeout``), then close the backend."""
         if not self._open:
             return
         self._register_closed()
+        if self._maintenance is not None:
+            self._stop.set()
+            self._maintenance.join(self.shutdown_timeout)
+            self._maintenance = None
         with self._background_lock:
             pending = list(self._background)
         if pending:
@@ -161,6 +176,38 @@ class SyncCache(CacheBase):
     def transaction(self) -> SyncTransaction:
         """Collect invalidations in this block and apply them when it exits."""
         return SyncTransaction(self)
+
+    # -- deployments ---------------------------------------------------------------
+
+    def _heartbeat(self) -> None:
+        assert self.scope is not None and isinstance(self.backend, SyncDeploymentRegistry)
+        try:
+            self.backend.heartbeat(self.scope)
+        except Exception as exc:
+            logger.warning("cache-cache heartbeat failed: %r", exc)
+
+    def collect_retired(self) -> int:
+        """Delete the entries of deployments with no live process for ``retire_after``."""
+        backend = self.backend
+        if not self._registry_enabled(SyncDeploymentRegistry):
+            return 0
+        assert isinstance(backend, SyncDeploymentRegistry)
+        deleted = 0
+        for scope in self._retired(backend.retired_scopes(self.retire_after)):
+            count = backend.drop_scope(scope, self.retire_after)
+            deleted += count
+            emit(self, CacheEvent("retire", tags=(scope,), size=count))
+        return deleted
+
+    def _maintain(self) -> None:
+        while True:
+            try:
+                self.collect_retired()
+            except Exception as exc:
+                logger.warning("cache-cache: collecting retired deployments failed: %r", exc)
+            if self._stop.wait(self.heartbeat_interval):
+                return
+            self._heartbeat()
 
     # -- invalidation --------------------------------------------------------------
 

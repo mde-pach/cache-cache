@@ -1,15 +1,24 @@
 """Storage backends."""
 
-from .base import Backend, Entry, StoreItem, SyncBackend
+from .base import (
+    Backend,
+    DeploymentRegistry,
+    Entry,
+    StoreItem,
+    SyncBackend,
+    SyncDeploymentRegistry,
+)
 from .memory import MemoryBackend, SyncMemoryBackend
 
 __all__ = [
     "Backend",
+    "DeploymentRegistry",
     "Entry",
     "MemoryBackend",
     "RedisBackend",
     "StoreItem",
     "SyncBackend",
+    "SyncDeploymentRegistry",
     "SyncMemoryBackend",
     "SyncRedisBackend",
 ]
